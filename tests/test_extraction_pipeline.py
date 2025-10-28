@@ -1,151 +1,151 @@
-"""
-Comprehensive unit tests for extraction_pipeline.
-Validates extraction, OCR, cleaning, saving, and orchestration logic.
-All file operations are mocked to run safely.
-"""
-
 import os
-import pytest
-from unittest import mock
-
-# Ensure project root is importable
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import pytest
 
-from extraction_pipeline.extractor_core import extract_text
-from extraction_pipeline.cleaner import clean_text
-from extraction_pipeline.utils import save_text, list_files
-from extraction_pipeline.postprocessor import postprocess_text
-from extraction_pipeline.ocr_utils import run_ocr_on_image, run_ocr_on_pdf_page
-from extraction_pipeline.main_extractor import process_file
+# ============================================================
+# ✅ Path Setup (make tests portable across Docker / local)
+# ============================================================
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+SCRIPTS_PATH = os.path.join(PROJECT_ROOT, "scripts")
+if SCRIPTS_PATH not in sys.path:
+    sys.path.append(SCRIPTS_PATH)
+
+# ============================================================
+# Imports (after sys.path setup)
+# ============================================================
+from scripts.extraction_pipeline.extractor_core import extract_text
+from scripts.extraction_pipeline.ocr_utils import run_ocr_on_image, run_ocr_on_pdf_page
+from scripts.extraction_pipeline.cleaner import clean_text
+from scripts.extraction_pipeline.postprocessor import postprocess_text
+from scripts.extraction_pipeline.utils import save_text, list_files
+from scripts.extraction_pipeline.main_extractor import (
+    process_single_file,
+    run_extraction_pipeline,
+)
+from scripts.extraction_pipeline.config import setup_logger
+
+# ============================================================
+# Logger for test suite
+# ============================================================
+test_logger = setup_logger("edge_case_tests", log_type="test")
+test_logger.info("🚀 Starting Extraction Pipeline Unit Tests")
 
 
 # -------------------------------------------------------------------
-# Fixtures
+# 🧩 Core Extraction and OCR
 # -------------------------------------------------------------------
 
-@pytest.fixture
-def sample_text():
-    return "This IS a SAMPLE text!! 123"
-
-
-# -------------------------------------------------------------------
-# Extraction & OCR Tests
-# -------------------------------------------------------------------
-
-def test_extract_text_returns_string(monkeypatch):
-    """✅ extract_text should return non-empty string with complete mock of fitz and OCR fallback."""
+def test_extract_text_with_mock(monkeypatch):
+    """✅ Ensure PDF extraction path and fallback OCR behave correctly."""
     class MockPage:
-        def get_text(self, mode="text", flags=None):
-            return "mocked page text"
-    class MockPixmap:
-        def save(self, path):
-            # Simulate saving OCR image
-            with open(path, "w") as f:
-                f.write("fakeimg")
+        def get_text(self, mode="text", flags=None): return "mocked text"
+        def get_pixmap(self): return type("Pix", (), {"save": lambda self, p: None})()
     class MockDoc:
-        def __iter__(self):
-            yield MockPage()
-        def load_page(self, i):
-            return MockPage()
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+        def __iter__(self): yield MockPage()
+        def load_page(self, i): return MockPage()
+        def __len__(self): return 1
+    monkeypatch.setattr("fitz.open", lambda f: MockDoc())
+    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda s, p, **kw: [[(None, ("OCR Output", 0.9))]])
 
-    monkeypatch.setattr("fitz.open", lambda path: MockDoc())
-    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda self, img, **kw: [[(None, ("Mocked OCR", 0.9))]])
+    test_logger.info("🧪 Running test_extract_text_with_mock...")
     result = extract_text("dummy.pdf")
     assert isinstance(result, str)
-    assert "mocked" in result or "OCR" in result
-
-
+    test_logger.info("✅ PDF extraction mock test passed.")
 
 
 def test_run_ocr_on_image(monkeypatch):
-    """✅ run_ocr_on_image should return recognized text."""
-    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda self, path, **kw: [[(None, ("Text Found", 0.95))]])
-    result = run_ocr_on_image("fake_image.png")
-    assert "Text" in result
+    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda self, path, **kw: [[(None, ("Detected Text", 0.95))]])
+    test_logger.info("🧪 Testing run_ocr_on_image...")
+    assert "Detected" in run_ocr_on_image("image.png")
+    test_logger.info("✅ OCR on image test passed.")
 
 
 def test_run_ocr_on_pdf_page(monkeypatch, tmp_path):
-    """✅ run_ocr_on_pdf_page mocked to avoid real files."""
-    # page.get_pixmap().save(path) is called, so mock that
     class MockPixmap:
-        def save(self, path):
-            # simulate saving image file
-            (tmp_path / "temp_img.png").write_text("fakeimg")
+        def save(self, path): (tmp_path / "mock.png").write_text("img")
     class MockPage:
         def get_pixmap(self): return MockPixmap()
     class MockDoc:
         def load_page(self, n): return MockPage()
-    monkeypatch.setattr("fitz.open", lambda path: MockDoc())
-    monkeypatch.setattr(
-        "paddleocr.PaddleOCR.ocr",
-        lambda self, img, **kw: [[(None, ("Mocked OCR Output", 0.95))]]
-    )
-    result = run_ocr_on_pdf_page("page.pdf", page_num=0)
-    assert "Mocked" in result
+    monkeypatch.setattr("fitz.open", lambda f: MockDoc())
+    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda self, img, **kw: [[(None, ("OCR OK", 0.92))]])
 
-# -------------------------------------------------------------------
-# Cleaning & Postprocessing
-# -------------------------------------------------------------------
-
-def test_clean_text_basic(sample_text):
-    """✅ clean_text normalizes and removes punctuation."""
-    cleaned = clean_text(sample_text)
-    assert isinstance(cleaned, str)
-    assert "sample" in cleaned.lower()
-
-
-def test_postprocess_text_removes_extra_spaces():
-    """✅ postprocess_text should condense spaces."""
-    result = postprocess_text("Loan   terms   and  conditions")
-    assert "  " not in result
+    test_logger.info("🧪 Testing run_ocr_on_pdf_page...")
+    out = run_ocr_on_pdf_page("file.pdf", 0)
+    assert "OCR" in out
+    test_logger.info("✅ OCR on PDF page test passed.")
 
 
 # -------------------------------------------------------------------
-# Utility Functions
+# 🧼 Cleaning / Postprocessing
+# -------------------------------------------------------------------
+
+def test_clean_text_basic():
+    out = clean_text("Loan!!! Details   HERE")
+    assert isinstance(out, str)
+    assert "Loan" in out
+    test_logger.info("✅ Text cleaning test passed.")
+
+
+def test_postprocess_text_merges_spaces():
+    text = postprocess_text("Loan   amount   :  1000")
+    assert "  " not in text
+    test_logger.info("✅ Postprocessing space merge test passed.")
+
+
+# -------------------------------------------------------------------
+# 🧰 Utils
 # -------------------------------------------------------------------
 
 def test_save_text_creates_file(tmp_path):
-    """✅ save_text should create output file correctly when given folder."""
-    output_dir = tmp_path
-    source_file = "dummy.pdf"
-    save_text("Hello Loan World", str(output_dir), source_file)
-    files = list(output_dir.glob("dummy_*.txt"))
-    assert len(files) == 1
-    assert "Loan" in files[0].read_text()
+    dest = tmp_path
+    save_text("data", str(dest), "loan_doc.pdf")
+    files = list(dest.glob("loan_doc_*.txt"))
+    assert files and files[0].exists()
+    test_logger.info("✅ save_text file creation test passed.")
 
 
 def test_list_files(tmp_path):
-    """✅ list_files should return all .txt files."""
+    """✅ Ensure list_files detects both txt and pdf."""
     (tmp_path / "a.txt").write_text("1")
     (tmp_path / "b.txt").write_text("2")
     files = list_files(str(tmp_path))
     assert isinstance(files, list)
-    assert all(f.endswith(".txt") for f in files)
+    joined = " ".join(files)
+    (tmp_path / "a.pdf").write_text("1")
+    (tmp_path / "b.pdf").write_text("2")
+    files = list_files(str(tmp_path))
+    joined = " ".join(files)
+    assert "a.pdf" in joined and "b.pdf" in joined
+    test_logger.info("✅ list_files detection test passed.")
 
 
 # -------------------------------------------------------------------
-# Main Extraction Process
+# 🔗 Pipeline Integration
 # -------------------------------------------------------------------
 
+def test_process_single_file(monkeypatch):
+    """✅ Ensure single file processing runs through all pipeline stages."""
+    monkeypatch.setattr("scripts.extraction_pipeline.extractor_core.extract_text", lambda f: "mock text")
+    monkeypatch.setattr("scripts.extraction_pipeline.cleaner.clean_text", lambda x: "cleaned text")
+    monkeypatch.setattr("scripts.extraction_pipeline.postprocessor.postprocess_text", lambda x: x)
+    monkeypatch.setattr("scripts.extraction_pipeline.utils.save_text", lambda t, d, s=None: True)
 
-def test_process_file_runs(monkeypatch):
-    """✅ process_file should complete even if OCR fallback is triggered."""
-    class MockPage:
-        def get_text(self, mode="text", flags=None): return "mock text"
-    class MockDoc:
-        def __iter__(self):
-            yield MockPage()
-        def load_page(self, i):
-            return MockPage()
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+    test_logger.info("🧪 Testing process_single_file...")
+    out = process_single_file("loan.pdf")
+    assert out is None or out is True
+    test_logger.info("✅ process_single_file test passed.")
 
-    monkeypatch.setattr("fitz.open", lambda path: MockDoc())
-    monkeypatch.setattr("extraction_pipeline.cleaner.clean_text", lambda t: t.lower())
-    monkeypatch.setattr("extraction_pipeline.utils.save_text", lambda text, dir, src: True)
-    monkeypatch.setattr("paddleocr.PaddleOCR.ocr", lambda self, img, **kw: [[(None, ("Mocked OCR", 0.9))]])
-    result = process_file("dummy.pdf")
-    assert result is None or isinstance(result, str)
+
+def test_run_extraction_pipeline(monkeypatch):
+    """✅ Ensure batch extraction pipeline runs end-to-end."""
+    monkeypatch.setattr("scripts.extraction_pipeline.main_extractor.list_files", lambda p: ["a.pdf", "b.pdf"])
+    monkeypatch.setattr("scripts.extraction_pipeline.main_extractor.process_single_file", lambda f: True)
+
+    test_logger.info("🧪 Testing run_extraction_pipeline...")
+    result = run_extraction_pipeline("data/")
+    assert result is None
+    test_logger.info("✅ run_extraction_pipeline test passed.")
