@@ -2,3 +2,4 @@
     remote = gcp_remote
 ['remote "gcp_remote"']
     url = gs://docpipeline-data-v1
+    credentialpath = /Users/pvrpratyusha/Workspace/NEU/MLOps/doc_project/doc-pipeline-2025-bc5e6b1d47c6.json
